@@ -24,7 +24,7 @@ if __name__ == "__main__":
     # Configuração
    recognizer = FaceRec(
        camera_index=0,                    # Webcam padrão
-       database_path=r"C:\Users\Loure\Downloads\foto",        # Pasta com fotos de referência
+       database_path=r"C:\Users\......",        # Pasta com fotos de referência
        detection_threshold=0.8,           # Threshold para detecção (0.0-1.0)
        recognition_threshold=0.87,         # AJUSTE: Valores mais baixos = mais sensível
        interval_analyse=2.0               # Intervalo entre reconhecimentos
@@ -38,4 +38,5 @@ if __name__ == "__main__":
 # Versão ultra-simples - apenas inicia e executa
 # if __name__ == "__main__":
 #     sistema = PlateRead.PlateReader()  # Usa configurações padrão
+
 #     sistema.run()
