@@ -1,360 +1,261 @@
-﻿import cv2
+import cv2
+import easyocr
 import numpy as np
-import pytesseract
-from typing import Optional, Tuple, List, Dict
+from collections import deque
 import time
+import os
 
-class PlateReader:
-    def __init__(self, camera_id: int = 0, show_preview: bool = True):
+class WebcamOCR:
+    def __init__(self, idiomas, camera_index, frame_skip, confidence_threshold, 
+                 database_path, save_interval):
         """
-        Inicializa o leitor de placas.
+        Sistema de OCR em tempo real usando EasyOCR
         
         Args:
-            camera_id: ID da câmera (0 para webcam padrão)
-            show_preview: Se True, mostra preview da câmera
+            idiomas: Lista de idiomas para o OCR (ex: ['pt', 'en'])
+            camera_index: Índice da câmera (padrão: 0)
+            frame_skip: Processa a cada N frames para melhor performance (padrão: 2)
+            confidence_threshold: Limiar de confiança para resultados (padrão: 0.5)
+            database_path: Pasta para salvar capturas (padrão: "ocr_database")
+            save_interval: Intervalo para salvar resultados automaticamente (padrão: 5)
         """
-        self.camera_id = camera_id
-        self.show_preview = show_preview
+        
+        # 1. Configurações do sistema
+        self.idiomas = idiomas
+        self.camera_index = camera_index
+        self.frame_skip = frame_skip
+        self.confidence_threshold = confidence_threshold
+        self.database_path = database_path
+        self.save_interval = save_interval
+        
+        # 2. Estado do sistema
         self.cap = None
-        self.is_running = False
+        self.running = False
+        self.frame_count = 0
+        self.last_save_time = 0
+        self.last_results = []  # Últimos resultados processados
         
-        # Configurações do OCR (Tesseract)
-        pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Windows
-        # Para Linux/Mac: geralmente já está no PATH
+        # 3. Buffer para histórico de resultados
+        self.results_history = deque(maxlen=5)  # Guarda últimos 5 resultados
         
-        # Parâmetros ajustáveis
-        self.plate_detection_params = {
-            'min_area': 2000,
-            'max_area': 20000,
-            'min_aspect_ratio': 2.0,
-            'max_aspect_ratio': 5.0
-        }
+        # 4. Inicializar EasyOCR
+        self.initialize_ocr()
         
-        # Histórico de placas reconhecidas
-        self.plate_history = []
+        # 5. Criar pasta para banco de dados se não existir
+        if not os.path.exists(self.database_path):
+            os.makedirs(self.database_path)
+            print(f"Pasta '{self.database_path}' criada para salvar capturas.")
         
-    def initialize_camera(self) -> bool:
-        """
-        Inicializa a conexão com a câmera.
-        
-        Returns:
-            bool: True se a câmera foi inicializada com sucesso
-        """
+        print(f"Sistema OCR iniciado com idiomas: {idiomas}")
+    
+    def initialize_ocr(self):
+        """Inicializa o leitor EasyOCR com fallback em caso de erro"""
         try:
-            self.cap = cv2.VideoCapture(self.camera_id)
-            if not self.cap.isOpened():
-                print(f"Erro: Não foi possível acessar a câmera {self.camera_id}")
-                return False
-                
-            # Configurações da câmera
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.reader = easyocr.Reader(self.idiomas, gpu=False)
+            print("EasyOCR inicializado com sucesso!")
+            self.ocr_available = True
+        except Exception as e:
+            print(f"Erro ao inicializar EasyOCR: {e}")
+            print("Sistema continuará sem OCR...")
+            self.ocr_available = False
+    
+    def processar_frame(self, frame):
+        """
+        Executa OCR no frame
+        Retorna lista de resultados filtrados
+        """
+        if not self.ocr_available:
+            return []
+        
+        try:
+            # Executar OCR
+            resultados = self.reader.readtext(frame)
             
-            print(f"Câmera {self.camera_id} inicializada com sucesso")
-            return True
+            # Filtrar por confiança
+            resultados_filtrados = [r for r in resultados if r[2] > self.confidence_threshold]
+            
+            # Adicionar ao histórico
+            if resultados_filtrados:
+                self.results_history.append(resultados_filtrados)
+                self.last_results = resultados_filtrados
+            
+            return resultados_filtrados
             
         except Exception as e:
-            print(f"Erro ao inicializar câmera: {e}")
-            return False
+            print(f"Erro no processamento OCR: {e}")
+            return []
     
-    def preprocess_image(self, frame: np.ndarray) -> np.ndarray:
+    def desenhar_resultados(self, frame, resultados):
         """
-        Pré-processa a imagem para melhor detecção.
-        
-        Args:
-            frame: Frame da câmera
+        Desenha bounding boxes e textos no frame
+        """
+        for (bbox, texto, confianca) in resultados:
+            # Converte bbox para inteiros
+            pts = np.array(bbox, dtype=np.int32)
             
-        Returns:
-            Imagem pré-processada
-        """
-        # Converte para escala de cinza
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # Desenha bounding box verde
+            cv2.polylines(frame, [pts], True, (0, 255, 0), 2)
+            
+            # Coordenadas para texto
+            x = int(pts[0][0])
+            y = int(pts[0][1]) - 10
+            
+            # Fundo preto para o texto
+            text_size = cv2.getTextSize(f"{texto} ({confianca:.2f})", 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            cv2.rectangle(frame, (x-5, y-text_size[1]-5), 
+                         (x+text_size[0]+5, y+5), (0, 0, 0), -1)
+            
+            # Texto em vermelho
+            cv2.putText(frame, f"{texto} ({confianca:.2f})", 
+                       (x, y), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.6, (0, 0, 255), 2)
         
-        # Aplica blur para reduzir ruído
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        
-        # Detecta bordas
-        edges = cv2.Canny(blurred, 50, 150)
-        
-        return edges
+        return frame
     
-    def detect_plate_regions(self, frame: np.ndarray) -> List[Tuple]:
+    def salvar_captura(self, frame, resultados):
         """
-        Detecta regiões que podem conter placas.
-        
-        Args:
-            frame: Frame da câmera
-            
-        Returns:
-            Lista de retângulos (x, y, w, h) das regiões detectadas
+        Salva frame atual com timestamp e textos detectados
         """
-        # Pré-processamento
-        processed = self.preprocess_image(frame)
+        timestamp = int(time.time())
         
-        # Encontra contornos
-        contours, _ = cv2.findContours(processed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        # Criar nome do arquivo com os textos detectados
+        if resultados:
+            textos = "_".join([r[1][:10] for r in resultados[:3]])  # Máx 3 textos
+            filename = f"{self.database_path}/ocr_{timestamp}_{textos}.jpg"
+        else:
+            filename = f"{self.database_path}/ocr_{timestamp}_sem_texto.jpg"
         
-        potential_plates = []
+        # Salvar imagem
+        cv2.imwrite(filename, frame)
+        print(f"Captura salva: {filename}")
         
-        for contour in contours:
-            # Aproxima o contorno para um polígono
-            epsilon = 0.02 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            
-            # Calcula retângulo delimitador
-            x, y, w, h = cv2.boundingRect(approx)
-            area = w * h
-            aspect_ratio = w / float(h) if h > 0 else 0
-            
-            # Filtra por área e aspecto de placa
-            if (self.plate_detection_params['min_area'] < area < 
-                self.plate_detection_params['max_area'] and
-                self.plate_detection_params['min_aspect_ratio'] < aspect_ratio < 
-                self.plate_detection_params['max_aspect_ratio']):
-                
-                potential_plates.append((x, y, w, h))
+        # Salvar metadados em arquivo texto
+        txt_filename = filename.replace('.jpg', '.txt')
+        with open(txt_filename, 'w', encoding='utf-8') as f:
+            f.write(f"Timestamp: {timestamp}\n")
+            f.write(f"Textos detectados: {len(resultados)}\n\n")
+            for i, (bbox, texto, confianca) in enumerate(resultados, 1):
+                f.write(f"Texto {i}: {texto}\n")
+                f.write(f"Confiança {i}: {confianca:.3f}\n")
+                f.write(f"Posição {i}: {bbox}\n\n")
         
-        return potential_plates
+        print(f"Metadados salvos: {txt_filename}")
     
-    def recognize_characters(self, plate_region: np.ndarray) -> str:
+    def OCRProcessor(self, frame):
         """
-        Reconhece caracteres na região da placa usando OCR.
+        Função principal de processamento OCR (similar à FaceRecognition)
+        """
+        # 1. Processar OCR (apenas a cada N frames)
+        self.frame_count += 1
+        if self.frame_count % self.frame_skip == 0:
+            resultados = self.processar_frame(frame)
+        else:
+            # Usar último resultado válido do histórico
+            resultados = self.results_history[-1] if self.results_history else []
         
-        Args:
-            plate_region: Região da imagem contendo a placa
-            
-        Returns:
-            Texto reconhecido
-        """
-        try:
-            # Converte para escala de cinza
-            gray = cv2.cvtColor(plate_region, cv2.COLOR_BGR2GRAY)
-            
-            # Aplica threshold
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
-            # Configurações do Tesseract para placas
-            config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-            
-            # Aplica OCR
-            text = pytesseract.image_to_string(thresh, config=config)
-            
-            # Limpa o texto
-            text = ''.join(c for c in text if c.isalnum())
-            
-            return text
-            
-        except Exception as e:
-            print(f"Erro no OCR: {e}")
-            return ""
+        # 2. Desenhar resultados
+        frame_anotado = self.desenhar_resultados(frame.copy(), resultados)
+        
+        # 3. Salvar automaticamente em intervalos
+        current_time = time.time()
+        if current_time - self.last_save_time > self.save_interval:
+            self.salvar_captura(frame, resultados)
+            self.last_save_time = current_time
+        
+        return frame_anotado
     
-    def draw_detections(self, frame: np.ndarray, plates: List[Tuple], 
-                       recognized_text: str = "") -> np.ndarray:
+    def CameraView(self):
         """
-        Desenha retângulos e texto na imagem.
-        
-        Args:
-            frame: Frame original
-            plates: Lista de regiões detectadas
-            recognized_text: Texto reconhecido
-            
-        Returns:
-            Frame com anotações
+        Método principal para captura e exibição da câmera
         """
-        frame_copy = frame.copy()
+        # Abrir câmera
+        self.cap = cv2.VideoCapture(self.camera_index)
         
-        # Desenha retângulos para cada placa detectada
-        for (x, y, w, h) in plates:
-            # Retângulo verde para placa
-            cv2.rectangle(frame_copy, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            
-            # Texto da placa
-            if recognized_text:
-                cv2.putText(frame_copy, recognized_text, (x, y - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-            
-            # Adiciona texto "PLACA DETECTADA"
-            cv2.putText(frame_copy, "PLACA DETECTADA", (x, y - 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        
-        return frame_copy
-    
-    def process_frame(self, frame: np.ndarray) -> Dict:
-        """
-        Processa um único frame.
-        
-        Args:
-            frame: Frame da câmera
-            
-        Returns:
-            Dicionário com resultados
-        """
-        # Detecta regiões de placa
-        plates = self.detect_plate_regions(frame)
-        
-        recognized_text = ""
-        
-        # Se encontrou alguma placa, tenta reconhecer caracteres
-        if plates:
-            # Pega a primeira placa detectada
-            x, y, w, h = plates[0]
-            
-            # Extrai região da placa
-            plate_region = frame[y:y+h, x:x+w]
-            
-            # Reconhece caracteres
-            recognized_text = self.recognize_characters(plate_region)
-            
-            # Adiciona ao histórico se não estiver vazio
-            if recognized_text:
-                self.plate_history.append({
-                    'timestamp': time.strftime("%Y-%m-%d %H:%M:%S"),
-                    'plate': recognized_text,
-                    'position': (x, y, w, h)
-                })
-        
-        return {
-            'plates_detected': len(plates),
-            'recognized_text': recognized_text,
-            'plate_regions': plates
-        }
-    
-    def run(self):
-        """
-        Executa o loop principal de leitura da câmera.
-        """
-        if not self.initialize_camera():
+        if not self.cap.isOpened():
+            print("ERRO: Não foi possível abrir a câmera")
             return
         
-        self.is_running = True
-        print("Sistema iniciado. Pressione 'q' para sair, 's' para salvar frame")
+        # Configurar propriedades da câmera para melhor performance
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         
-        while self.is_running:
-            # Captura frame
-            ret, frame = self.cap.read()
-            
-            if not ret:
-                print("Erro ao capturar frame")
-                break
-            
-            # Processa o frame
-            results = self.process_frame(frame)
-            
-            # Desenha detecções
-            annotated_frame = self.draw_detections(
-                frame, 
-                results['plate_regions'],
-                results['recognized_text']
-            )
-            
-            # Mostra informações na tela
-            info_text = f"Placas detectadas: {results['plates_detected']}"
-            cv2.putText(annotated_frame, info_text, (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            
-            # Mostra preview
-            if self.show_preview:
-                cv2.imshow('Sistema de Leitura de Placas', annotated_frame)
-            
-            # Controles
-            key = cv2.waitKey(1) & 0xFF
-            
-            if key == ord('q'):
-                break
-            elif key == ord('s'):
-                # Salva frame atual
-                filename = f"captura_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
-                cv2.imwrite(filename, annotated_frame)
-                print(f"Frame salvo como {filename}")
-            elif key == ord('h'):
-                # Mostra histórico
-                self.show_history()
+        self.running = True
+        self.last_save_time = time.time()
         
-        # Libera recursos
-        self.stop()
-    
-    def show_history(self):
-        """Mostra histórico de placas detectadas."""
         print("\n" + "="*50)
-        print("HISTÓRICO DE PLACAS DETECTADAS")
+        print("Webcam OCR iniciado")
+        print("="*50)
+        print("Controles:")
+        print("  'q' - Sair")
+        print("  's' - Salvar frame atual")
+        print("  'c' - Limpar histórico")
+        print(f"  Intervalo auto-save: {self.save_interval}s")
         print("="*50)
         
-        if not self.plate_history:
-            print("Nenhuma placa detectada ainda.")
-        else:
-            for i, entry in enumerate(self.plate_history[-10:], 1):
-                print(f"{i}. [{entry['timestamp']}] - Placa: {entry['plate']}")
-        print("="*50)
+        try:
+            while self.running:
+                ret, frame = self.cap.read()
+                if not ret:
+                    print("ERRO: Não foi possível ler o frame da câmera")
+                    break
+                
+                # Processar frame
+                frame_anotado = self.OCRProcessor(frame)
+                
+                # Adicionar informações na tela
+                height, width = frame.shape[:2]
+                
+                # Status do OCR
+                status = "OCR: Ativo" if self.ocr_available else "OCR: Indisponível"
+                color_status = (0, 255, 0) if self.ocr_available else (0, 0, 255)
+                
+                # Informações superiores
+                cv2.putText(frame_anotado, status, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_status, 2)
+                
+                cv2.putText(frame_anotado, f"Idiomas: {self.idiomas}", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+                # Informações inferiores
+                fps = self.cap.get(cv2.CAP_PROP_FPS)
+                textos_detectados = len(self.last_results)
+                
+                info_text = f"FPS: {fps:.1f} | Frame skip: {self.frame_skip} | Textos: {textos_detectados}"
+                cv2.putText(frame_anotado, info_text, (10, height-20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+                
+                # Mostrar frame
+                cv2.imshow('Camera_View - Sistema OCR', frame_anotado)
+                
+                # Processar teclas
+                key = cv2.waitKey(1) & 0xFF
+                
+                if key == ord('q') or cv2.getWindowProperty('Camera_View - Sistema OCR', cv2.WND_PROP_VISIBLE) < 1:
+                    self.running = False
+                    break
+                    
+                elif key == ord('s'):
+                    self.salvar_captura(frame, self.last_results)
+                    
+                elif key == ord('c'):
+                    self.results_history.clear()
+                    self.last_results = []
+                    print("🧹 Histórico limpo!")
+                
+        except KeyboardInterrupt:
+            print("\nInterrompido pelo usuário")
+        except Exception as e:
+            print(f"Erro inesperado: {e}")
+        finally:
+            self.cleanup()
     
-    def update_parameters(self, **kwargs):
-        """
-        Atualiza parâmetros do sistema.
-        
-        Args:
-            **kwargs: Parâmetros para atualizar
-        """
-        for key, value in kwargs.items():
-            if key in self.plate_detection_params:
-                self.plate_detection_params[key] = value
-                print(f"Parâmetro atualizado: {key} = {value}")
-    
-    def stop(self):
-        """Para o sistema e libera recursos."""
-        self.is_running = False
-        
-        if self.cap:
+    def cleanup(self):
+        """Libera recursos do sistema"""
+        print("\nLiberando recursos...")
+        if self.cap is not None:
             self.cap.release()
-        
         cv2.destroyAllWindows()
-        print("Sistema encerrado.")
+        self.running = False
+        print("Recursos liberados com sucesso!")
 
-
-# Funções auxiliares para uso direto
-def create_plate_reader(camera_id: int = 0, show_preview: bool = True) -> PlateReader:
-    """
-    Cria uma instância do leitor de placas.
-    
-    Args:
-        camera_id: ID da câmera
-        show_preview: Mostrar preview
-        
-    Returns:
-        Instância do PlateReader
-    """
-    return PlateReader(camera_id, show_preview)
-
-
-def quick_detect(image_path: str) -> Dict:
-    """
-    Detecta placa em uma imagem estática.
-    
-    Args:
-        image_path: Caminho da imagem
-        
-    Returns:
-        Resultados da detecção
-    """
-    reader = PlateReader(show_preview=False)
-    
-    # Carrega imagem
-    image = cv2.imread(image_path)
-    if image is None:
-        return {"error": "Imagem não encontrada"}
-    
-    # Processa imagem
-    results = reader.process_frame(image)
-    
-    # Desenha resultados
-    annotated = reader.draw_detections(
-        image, 
-        results['plate_regions'],
-        results['recognized_text']
-    )
-    
-    # Salva resultado
-    output_path = "resultado_detecao.jpg"
-    cv2.imwrite(output_path, annotated)
-    
-    results['output_image'] = output_path
-    return results
