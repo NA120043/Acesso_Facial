@@ -1,7 +1,7 @@
-﻿import os
+#import os
 # from FaceRec import FaceRec
-from FaceRec2 import FaceRec
-import PlateRead
+#from FaceRec2 import FaceRec
+from PlateRead import WebcamOCR
 
 
 # if __name__ == "__main__":
@@ -18,25 +18,34 @@ import PlateRead
 #     cam.CameraView()
 
 
-if __name__ == "__main__":
-   pasta_atual = os.getcwd()
+# if __name__ == "__main__":
+#    pasta_atual = os.getcwd()
     
+#     # configuração
+#    recognizer = facerec(
+#        camera_index=0,                    # webcam padrão
+#        database_path=f"{pasta_atual}\\foto",        # pasta com fotos de referência
+#        detection_threshold=0.8,           # threshold para detecção (0.0-1.0)
+#        recognition_threshold=0.87,         # ajuste: valores mais baixos = mais sensível
+#        interval_analyse=2.0               # intervalo entre reconhecimentos
+#     )
+    
+#     # iniciar
+#    recognizer.cameraview()
+
+
+
+# Exemplo da leitura de placas
+if __name__ == "__main__":
     # Configuração
-   recognizer = FaceRec(
-       camera_index=0,                    # Webcam padrão
-       database_path=r"C:\Users\......",        # Pasta com fotos de referência
-       detection_threshold=0.8,           # Threshold para detecção (0.0-1.0)
-       recognition_threshold=0.87,         # AJUSTE: Valores mais baixos = mais sensível
-       interval_analyse=2.0               # Intervalo entre reconhecimentos
+    ocr_system = WebcamOCR(
+        idiomas=['pt', 'en'],        # Português e Inglês
+        camera_index=0,                # Câmera padrão
+        frame_skip=2,                   # Processa a cada 2 frames
+        confidence_threshold=0.5,       # Confiança mínima de 50%
+        database_path="ocr_database",    # Pasta para salvar capturas
+        save_interval=10                  # Salva automaticamente a cada 10 segundos
     )
     
-    # Iniciar
-   recognizer.CameraView()
-
-
-
-# Versão ultra-simples - apenas inicia e executa
-# if __name__ == "__main__":
-#     sistema = PlateRead.PlateReader()  # Usa configurações padrão
-
-#     sistema.run()
+    # Iniciar sistema
+    ocr_system.CameraView()
